@@ -180,3 +180,66 @@ This design spreads measurements across time so that temporal factors (CPU therm
 | Minimum significance | 3 | 162 | ~3-6 hours |
 | Recommended | 5 | 270 | ~5-10 hours |
 | High confidence | 10 | 540 | ~10-20 hours |
+
+## Measurement Reliability
+
+### The Problem
+
+A reviewer identified three concerns about the energy measurement methodology:
+
+1. **Unreported tracking mode**: CodeCarbon can use RAPL (hardware counters) or TDP (software estimation) for power measurement. The method significantly affects accuracy, but previously no metadata was captured — only the final `emissions_kg` float.
+
+2. **Noise floor for small tests**: CodeCarbon samples energy at ~15-second intervals. Tests completing in <5 seconds (e.g., 100-request light tests at ~1.8s) fall below this sampling window, producing unreliable energy readings. Some tests returned `emissions_kg ≈ 0`.
+
+3. **Missing DRAM energy**: CodeCarbon estimates RAM power using a constant (0.375 W/GB) based on total system RAM, not per-process DRAM usage. Memory-intensive frameworks (Java/Go with larger runtimes) may have underestimated energy footprints. This is a hardware/platform limitation that cannot be fixed in software.
+
+### What Was Done
+
+**Concern 1 — Energy metadata capture**: Each test now extracts rich metadata from CodeCarbon's CSV immediately after `tracker.stop()` (before the next test overwrites it). The JSON result includes an `energy_metadata` dict with:
+- `tracking_mode` (e.g., "machine" for system-wide tracking)
+- `power_measurement_method` ("TDP-based" or "Hardware-based (RAPL/powermetrics)")
+- Energy breakdown: `cpu_energy_kwh`, `gpu_energy_kwh`, `ram_energy_kwh`
+- Hardware info: `cpu_model`, `cpu_count`, `ram_total_size_gb`
+- CodeCarbon version, OS, region
+
+**Concern 2 — Reliability classification**: Each test is classified based on duration:
+
+| Classification | Duration | Meaning |
+|---------------|----------|---------|
+| **Reliable** | >= 15s | At least one full CodeCarbon sampling window |
+| **Marginal** | 5–15s | Partial sampling — higher uncertainty |
+| **Unreliable** | < 5s | Below noise floor — energy values are not meaningful |
+
+Warnings are printed to the console for unreliable/marginal tests. The analysis report includes a "Measurement Reliability" section with per-framework breakdowns. Winner statements include `[CAVEAT]` annotations when unreliable measurements are present.
+
+**Concern 3 — DRAM limitation**: Documented in the analysis report's "Measurement Limitations" section. This cannot be fixed in software — it requires hardware-level DRAM energy monitoring (e.g., Intel RAPL DRAM domain), which is not available on all platforms.
+
+### The `--min-duration` Flag
+
+To ensure reliable energy measurements for short tests, use `--min-duration`:
+
+```bash
+# Pad tests to at least 15 seconds
+python test_carbon_comprehensive.py -f fastapi -l 100 -e light --min-duration 15
+
+# Full suite with reliable measurements
+python test_carbon_comprehensive.py --suite --min-duration 15
+
+# Via quick_test.py
+python quick_test.py fastapi 100 light 1 --min-duration 15
+```
+
+When the load test finishes in less than `--min-duration` seconds, the tracker continues running (with `time.sleep()`) until the minimum is reached. This ensures CodeCarbon captures at least one full sampling window. The padding time is recorded in the result JSON as `padding_seconds`.
+
+**Default**: `--min-duration 0` (no padding — preserves existing behavior).
+
+**Recommendation**: Use `--min-duration 15` for any test configuration where the load completes in under 15 seconds (typically 100-request and 1000-request tests with light/medium endpoints).
+
+### Known Limitations
+
+These limitations are inherent to the measurement platform and are documented in the generated report:
+
+1. **DRAM energy is estimated, not measured**: RAM power = 0.375 W/GB * total system RAM. Not per-process. Java and Go frameworks with larger runtime memory footprints may have underestimated energy consumption.
+2. **System-wide tracking**: CodeCarbon uses machine-level tracking, capturing energy from all processes — not just the framework under test. Background process energy is included as noise.
+3. **TDP-based power on macOS/non-RAPL systems**: On systems without Intel RAPL (e.g., Apple Silicon), CodeCarbon uses TDP (Thermal Design Power) as a constant power estimate. This does not capture workload-dependent power variation.
+4. **CSV overwrite**: CodeCarbon CSV filenames use `test_id` without run_id, so multiple runs overwrite the same file. Metadata is extracted immediately after each `tracker.stop()` to avoid data loss.

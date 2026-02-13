@@ -58,6 +58,12 @@ METRIC_DIRECTION = {
 
 ALPHA = 0.05  # significance level
 
+# Same thresholds as test_carbon_comprehensive.py
+RELIABILITY_THRESHOLDS = {
+    "reliable": 15.0,
+    "marginal": 5.0,
+}
+
 
 def _extract_metric_values(results: List[Dict], metric: str) -> List[float]:
     """Extract a list of metric values from a list of result dicts."""
@@ -121,6 +127,124 @@ def load_test_results(directory="test_results"):
             print(f"Warning: Could not load {file_path}: {e}")
 
     return all_results
+
+
+# ---------------------------------------------------------------------------
+# Measurement reliability helpers
+# ---------------------------------------------------------------------------
+
+def _extract_reliability(result: Dict) -> str:
+    """Extract measurement reliability from a result dict.
+
+    Checks (in order):
+    1. Top-level ``measurement_reliability`` (new format)
+    2. Nested ``energy_metadata.measurement_reliability``
+    3. Fallback: infer from ``duration_seconds`` using thresholds (backward compat)
+    """
+    rel = result.get("measurement_reliability")
+    if rel:
+        return rel
+
+    rel = result.get("energy_metadata", {}).get("measurement_reliability")
+    if rel:
+        return rel
+
+    # Backward compat: infer from duration
+    dur = result.get("total_tracked_duration_seconds") or result.get("duration_seconds")
+    if dur is not None:
+        if dur >= RELIABILITY_THRESHOLDS["reliable"]:
+            return "reliable"
+        elif dur >= RELIABILITY_THRESHOLDS["marginal"]:
+            return "marginal"
+        else:
+            return "unreliable"
+
+    return "unknown"
+
+
+def build_reliability_summary(results: List[Dict]) -> Dict:
+    """Build a reliability assessment summary.
+
+    Returns:
+        dict with keys:
+        - overall: {reliable: N, marginal: N, unreliable: N, unknown: N}
+        - by_framework: {fw_key: {reliable: N, ...}}
+        - by_config: {(fw, load, ep): {reliable: N, ...}}
+        - reliable_fraction: float (0.0–1.0)
+    """
+    overall: Dict[str, int] = {"reliable": 0, "marginal": 0, "unreliable": 0, "unknown": 0}
+    by_framework: Dict[str, Dict[str, int]] = {}
+    by_config: Dict[tuple, Dict[str, int]] = {}
+
+    for r in results:
+        rel = _extract_reliability(r)
+        overall[rel] = overall.get(rel, 0) + 1
+
+        fw = r.get("framework_key", "unknown")
+        if fw not in by_framework:
+            by_framework[fw] = {"reliable": 0, "marginal": 0, "unreliable": 0, "unknown": 0}
+        by_framework[fw][rel] = by_framework[fw].get(rel, 0) + 1
+
+        cfg = (fw, r.get("load_size", 0), r.get("endpoint_name", ""))
+        if cfg not in by_config:
+            by_config[cfg] = {"reliable": 0, "marginal": 0, "unreliable": 0, "unknown": 0}
+        by_config[cfg][rel] = by_config[cfg].get(rel, 0) + 1
+
+    total = sum(overall.values())
+    reliable_fraction = overall["reliable"] / total if total > 0 else 0.0
+
+    return {
+        "overall": overall,
+        "by_framework": by_framework,
+        "by_config": by_config,
+        "reliable_fraction": reliable_fraction,
+    }
+
+
+def print_reliability_summary(results: List[Dict]):
+    """Print measurement reliability assessment to console."""
+    summary = build_reliability_summary(results)
+    overall = summary["overall"]
+    total = sum(overall.values())
+
+    print("\n" + "=" * 100)
+    print("  MEASUREMENT RELIABILITY ASSESSMENT")
+    print("=" * 100)
+
+    print(f"\n  Overall: {overall['reliable']}/{total} reliable, "
+          f"{overall['marginal']}/{total} marginal, "
+          f"{overall['unreliable']}/{total} unreliable")
+
+    if overall["unreliable"] > 0:
+        print(f"\n  ⚠️  WARNING: {overall['unreliable']} measurements are below CodeCarbon's noise floor (<5s).")
+        print(f"     Energy comparisons for these configurations are unreliable.")
+        print(f"     Re-run with --min-duration 15 for trustworthy energy measurements.")
+
+    if overall["marginal"] > 0:
+        print(f"\n  ⚠️  NOTICE: {overall['marginal']} measurements have partial sampling (5-15s).")
+
+    # Per-framework table
+    by_fw = summary["by_framework"]
+    if by_fw:
+        print(f"\n  {'Framework':<15} {'Reliable':<12} {'Marginal':<12} {'Unreliable':<12} {'Unknown':<10}")
+        print("  " + "-" * 60)
+        for fw_key in sorted(by_fw.keys()):
+            counts = by_fw[fw_key]
+            print(f"  {fw_key:<15} {counts['reliable']:<12} {counts['marginal']:<12} "
+                  f"{counts['unreliable']:<12} {counts['unknown']:<10}")
+
+    # List fully-unreliable configs
+    unreliable_configs = []
+    for cfg, counts in summary["by_config"].items():
+        if counts["reliable"] == 0 and counts["marginal"] == 0 and (counts["unreliable"] > 0):
+            unreliable_configs.append(cfg)
+
+    if unreliable_configs:
+        print(f"\n  Fully unreliable configurations (all measurements <5s):")
+        for fw, load, ep in sorted(unreliable_configs):
+            print(f"    - {fw} / {load} requests / {ep}")
+
+    print()
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +471,7 @@ def determine_statistical_winner(
     grouped_by_framework: Dict[str, List[float]],
     metric: str,
     direction: str = "lower",
+    reliability_counts: Optional[Dict[str, int]] = None,
 ) -> Dict:
     """Determine the best framework with statistical qualification.
 
@@ -354,6 +479,8 @@ def determine_statistical_winner(
         grouped_by_framework: {framework_key: [metric_values]}
         metric: metric name
         direction: "lower" if lower is better, "higher" if higher is better
+        reliability_counts: optional {reliable: N, marginal: N, unreliable: N}
+            from build_reliability_summary()["overall"]; used to append caveats.
 
     Returns dict with winner, is_significant, statement string.
     """
@@ -408,12 +535,23 @@ def determine_statistical_winner(
         tag = "[N.S.]"
         qualifier = f"not significantly different from {runner_up} (p={p_value:.4f})"
 
+    statement = f"{tag} {best} ({best_mean:.4f}) — {qualifier}"
+
+    # Append reliability caveat if applicable
+    if reliability_counts:
+        total_m = sum(reliability_counts.values())
+        unreliable_m = reliability_counts.get("unreliable", 0)
+        if total_m > 0 and unreliable_m == total_m:
+            statement += " [CAVEAT: all measurements below noise floor]"
+        elif unreliable_m > 0:
+            statement += f" [CAVEAT: {unreliable_m}/{total_m} measurements unreliable]"
+
     return {
         "winner": best,
         "is_significant": significant,
         "p_value": round(p_value, 6) if not math.isnan(p_value) else None,
         "runner_up": runner_up,
-        "statement": f"{tag} {best} ({best_mean:.4f}) — {qualifier}",
+        "statement": statement,
     }
 
 
@@ -616,6 +754,8 @@ def print_framework_summary(results: List[Dict]):
         num_runs = _detect_num_runs(results)
 
         if num_runs >= 2 and HAS_SCIPY:
+            rel_summary = build_reliability_summary(results)
+            rel_counts = rel_summary["overall"]
             print("\n  WINNERS (statistically qualified):")
             for metric, desc in [
                 ("emissions_g", "Lowest Total Emissions"),
@@ -625,7 +765,8 @@ def print_framework_summary(results: List[Dict]):
             ]:
                 fw_groups = _build_framework_metric_groups(results, metric)
                 direction = METRIC_DIRECTION[metric]
-                winner = determine_statistical_winner(fw_groups, metric, direction)
+                winner = determine_statistical_winner(fw_groups, metric, direction,
+                                                      reliability_counts=rel_counts)
                 print(f"  {desc}: {winner['statement']}")
         else:
             # Fallback: simple min/max (legacy behavior)
@@ -729,6 +870,59 @@ def generate_markdown_report(results: List[Dict], output_file="test_results/REPO
                     f"{avg['avg_emissions_per_request_mg']:.3f} | {avg['avg_rps']:.2f} | "
                     f"{avg['avg_response_time_ms']:.2f} |\n")
 
+        # ---- Measurement Reliability ----
+        rel_summary = build_reliability_summary(results)
+        rel_overall = rel_summary["overall"]
+        rel_total = sum(rel_overall.values())
+
+        f.write("\n## Measurement Reliability\n\n")
+        f.write("CodeCarbon's accuracy depends on test duration relative to its ~15-second sampling window.\n\n")
+        f.write("### Reliability Classification\n\n")
+        f.write("| Classification | Duration | Meaning |\n")
+        f.write("|---------------|----------|--------|\n")
+        f.write("| Reliable | >= 15s | At least one full CodeCarbon sampling window |\n")
+        f.write("| Marginal | 5-15s | Partial sampling — energy values have higher uncertainty |\n")
+        f.write("| Unreliable | < 5s | Below noise floor — energy comparisons are not meaningful |\n\n")
+
+        f.write(f"**Overall**: {rel_overall['reliable']}/{rel_total} reliable, "
+                f"{rel_overall['marginal']}/{rel_total} marginal, "
+                f"{rel_overall['unreliable']}/{rel_total} unreliable\n\n")
+
+        # Per-framework reliability table
+        by_fw = rel_summary["by_framework"]
+        if by_fw:
+            f.write("### Per-Framework Reliability\n\n")
+            f.write("| Framework | Reliable | Marginal | Unreliable |\n")
+            f.write("|-----------|----------|----------|------------|\n")
+            for fw_key in sorted(by_fw.keys()):
+                counts = by_fw[fw_key]
+                f.write(f"| {fw_key} | {counts['reliable']} | {counts['marginal']} | {counts['unreliable']} |\n")
+            f.write("\n")
+
+        # Measurement Limitations
+        f.write("### Measurement Limitations\n\n")
+        f.write("The following are known limitations of the energy measurement methodology:\n\n")
+        f.write("1. **DRAM Energy Estimation**: CodeCarbon estimates RAM power using a constant "
+                "(0.375 W/GB) based on total system RAM, not per-process DRAM usage. "
+                "Memory-intensive frameworks (Java, Go) may have underestimated energy footprints. "
+                "This is a platform limitation that cannot be fixed in software.\n")
+        f.write("2. **System-Wide Tracking**: CodeCarbon uses machine-level tracking mode, which "
+                "captures energy consumption from all processes on the system, not just the "
+                "framework under test. Background processes contribute noise.\n")
+
+        # Detect power method from results
+        power_methods = set()
+        for r in results:
+            pm = r.get("energy_metadata", {}).get("power_measurement_method", "")
+            if pm:
+                power_methods.add(pm)
+        if power_methods:
+            method_str = "; ".join(sorted(power_methods))
+            f.write(f"3. **Power Measurement Method**: Detected: {method_str}. "
+                    "TDP-based estimation uses a constant CPU power value rather than actual "
+                    "hardware counters (RAPL), which may not capture workload-dependent power variation.\n")
+        f.write("\n")
+
         # ---- Statistical Summary (only if multiple runs) ----
         if num_runs >= 2 and HAS_SCIPY:
             f.write("\n## Statistical Summary\n\n")
@@ -786,7 +980,8 @@ def generate_markdown_report(results: List[Dict], output_file="test_results/REPO
                                 f"{pw['p_corrected']:.6f} | {pw['cohens_d']:.4f} | {pw['effect_size']} | {sig} |\n")
 
                 # Winner
-                winner = determine_statistical_winner(fw_groups, metric, direction)
+                winner = determine_statistical_winner(fw_groups, metric, direction,
+                                                      reliability_counts=rel_overall)
                 f.write(f"\n**Winner**: {winner['statement']}\n\n")
 
         # ---- Detailed Results ----
@@ -832,7 +1027,8 @@ def generate_markdown_report(results: List[Dict], output_file="test_results/REPO
                 ]:
                     fw_groups = _build_framework_metric_groups(results, metric)
                     direction = METRIC_DIRECTION[metric]
-                    winner = determine_statistical_winner(fw_groups, metric, direction)
+                    winner = determine_statistical_winner(fw_groups, metric, direction,
+                                                          reliability_counts=rel_overall)
                     f.write(f"- **{desc}**: {winner['statement']}\n")
             else:
                 min_emissions = min(summaries, key=lambda x: x['avg_emissions_g'])
@@ -854,6 +1050,10 @@ def generate_markdown_report(results: List[Dict], output_file="test_results/REPO
             f.write("- **Multiple Comparisons Correction**: Bonferroni (p_corrected = p_raw * num_comparisons).\n")
             f.write("- **Effect Size**: Cohen's d with pooled standard deviation; "
                     "classified as negligible (<0.2), small (0.2-0.5), medium (0.5-0.8), or large (>0.8).\n")
+            f.write("- **Measurement Reliability**: Each test is classified as reliable (>=15s), "
+                    "marginal (5-15s), or unreliable (<5s) based on duration relative to "
+                    "CodeCarbon's sampling window. Winner statements include caveats when "
+                    "unreliable measurements are present.\n")
 
     print(f"\n  Markdown report saved to: {output_file}")
 
@@ -877,6 +1077,9 @@ def main():
 
     num_runs = _detect_num_runs(results)
     print(f"\n  Loaded {len(results)} test results (detected {num_runs} run(s) per config)")
+
+    # Measurement reliability assessment
+    print_reliability_summary(results)
 
     # Generate various analysis reports
     print_comparison_table(results)
