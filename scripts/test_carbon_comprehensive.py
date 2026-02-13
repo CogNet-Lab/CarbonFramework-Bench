@@ -151,15 +151,17 @@ def warmup(port, requests_count=50):
     time.sleep(2)
 
 
-def run_test(framework_key, load_size, endpoint_name, endpoint_path):
+def run_test(framework_key, load_size, endpoint_name, endpoint_path, run_id=None):
     """Run a complete test for one framework, load size, and endpoint"""
-    
+
     framework_config = FRAMEWORKS[framework_key]
     framework_name = framework_config["name"]
     port = framework_config["port"]
-    
+
+    run_label = f" (Run {run_id})" if run_id is not None else ""
+
     print("\n" + "=" * 80)
-    print(f"🌱 Carbon Footprint Test")
+    print(f"🌱 Carbon Footprint Test{run_label}")
     print("=" * 80)
     print(f"Framework: {framework_name}")
     print(f"Load: {load_size} requests")
@@ -235,22 +237,25 @@ def run_test(framework_key, load_size, endpoint_name, endpoint_path):
         "avg_emissions_per_request_mg": round(emissions_kg * 1000000 / load_size, 3) if emissions_kg else 0,
         "response_time_stats": stats,
     }
-    
+    if run_id is not None:
+        results["run_id"] = run_id
+
     # Save results
-    save_results(results, test_id)
+    save_results(results, test_id, run_id=run_id)
     print_summary(results)
-    
+
     return results
 
 
-def save_results(results, test_id):
+def save_results(results, test_id, run_id=None):
     """Save test results to JSON file"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"test_results/{test_id}_{timestamp}.json"
-    
+    run_suffix = f"_run{run_id}" if run_id is not None else ""
+    filename = f"test_results/{test_id}{run_suffix}_{timestamp}.json"
+
     with open(filename, 'w') as f:
         json.dump(results, f, indent=2)
-    
+
     print(f"\n💾 Results saved to: {filename}")
 
 
@@ -283,59 +288,79 @@ def print_summary(results):
     print("=" * 80)
 
 
-def run_comparison_suite(frameworks=None, loads=None, endpoints=None):
-    """Run comprehensive comparison across frameworks, loads, and endpoints"""
-    
+def run_comparison_suite(frameworks=None, loads=None, endpoints=None, num_runs=5):
+    """Run comprehensive comparison across frameworks, loads, and endpoints.
+
+    Uses round-robin ordering: all configurations run in round 1, then all in
+    round 2, etc.  This spreads measurements across time so that temporal
+    factors (thermal throttling, background load) affect all frameworks equally
+    and makes the independence assumption for statistical tests more defensible.
+    """
+
     if frameworks is None:
         frameworks = list(FRAMEWORKS.keys())
     if loads is None:
         loads = TEST_LOADS
     if endpoints is None:
         endpoints = ENDPOINTS
-    
+
     all_results = []
-    
+
+    # Build list of (framework, load, endpoint_name, endpoint_path) configs
+    configs = []
+    for framework in frameworks:
+        for load in loads:
+            for endpoint_name, endpoint_path in endpoints.items():
+                configs.append((framework, load, endpoint_name, endpoint_path))
+
+    total_tests = len(configs) * num_runs
+
     print("\n" + "🔬" * 40)
     print("COMPREHENSIVE CARBON FOOTPRINT COMPARISON")
     print("🔬" * 40)
     print(f"Frameworks: {', '.join([FRAMEWORKS[f]['name'] for f in frameworks])}")
     print(f"Load Sizes: {', '.join(map(str, loads))}")
     print(f"Endpoints: {', '.join(endpoints.keys())}")
+    print(f"Runs per config: {num_runs}")
+    print(f"Total tests: {total_tests}")
     print()
-    
-    total_tests = len(frameworks) * len(loads) * len(endpoints)
+
     current_test = 0
-    
-    for framework in frameworks:
-        for load in loads:
-            for endpoint_name, endpoint_path in endpoints.items():
-                current_test += 1
-                print(f"\n\n{'='*80}")
-                print(f"Test {current_test}/{total_tests}")
-                print(f"{'='*80}")
-                
-                result = run_test(framework, load, endpoint_name, endpoint_path)
-                if result:
-                    all_results.append(result)
-                
-                # Small delay between tests
-                if current_test < total_tests:
-                    print("\n⏳ Waiting 5 seconds before next test...")
-                    time.sleep(5)
-    
+
+    for run_id in range(1, num_runs + 1):
+        print(f"\n\n{'#'*80}")
+        print(f"  ROUND {run_id}/{num_runs}")
+        print(f"{'#'*80}")
+
+        for framework, load, endpoint_name, endpoint_path in configs:
+            current_test += 1
+            print(f"\n\n{'='*80}")
+            print(f"Test {current_test}/{total_tests} (Round {run_id})")
+            print(f"{'='*80}")
+
+            rid = run_id if num_runs > 1 else None
+            result = run_test(framework, load, endpoint_name, endpoint_path, run_id=rid)
+            if result:
+                all_results.append(result)
+
+            # Small delay between tests
+            if current_test < total_tests:
+                print("\n  Waiting 5 seconds before next test...")
+                time.sleep(5)
+
     # Save combined results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     combined_file = f"test_results/comparison_suite_{timestamp}.json"
     with open(combined_file, 'w') as f:
         json.dump(all_results, f, indent=2)
-    
+
     print(f"\n\n{'='*80}")
-    print(f"✅ ALL TESTS COMPLETED!")
+    print(f"  ALL TESTS COMPLETED!")
     print(f"{'='*80}")
     print(f"Total tests run: {len(all_results)}")
     print(f"Combined results saved to: {combined_file}")
     print()
-    
+
     return all_results
 
 
@@ -351,22 +376,36 @@ if __name__ == "__main__":
                         help="Specific endpoint to test")
     parser.add_argument("--suite", "-s", action="store_true",
                         help="Run full comparison suite")
-    
+    parser.add_argument("--runs", "-r", type=int, default=None,
+                        help="Number of independent repetitions per configuration "
+                             "(default: 5 for suite, 1 for single test). "
+                             "Use -r 3 for quicker runs or -r 5+ for statistical significance.")
+
     args = parser.parse_args()
-    
+
     if args.suite:
-        # Run full suite
-        run_comparison_suite()
+        num_runs = args.runs if args.runs is not None else 5
+        run_comparison_suite(num_runs=num_runs)
     elif args.framework and args.load and args.endpoint:
-        # Run specific test
-        run_test(args.framework, args.load, args.endpoint, ENDPOINTS[args.endpoint])
+        num_runs = args.runs if args.runs is not None else 1
+        for run_id in range(1, num_runs + 1):
+            if num_runs > 1:
+                print(f"\n{'#'*80}")
+                print(f"  RUN {run_id}/{num_runs}")
+                print(f"{'#'*80}")
+            rid = run_id if num_runs > 1 else None
+            run_test(args.framework, args.load, args.endpoint, ENDPOINTS[args.endpoint], run_id=rid)
+            if run_id < num_runs:
+                print("\n  Waiting 5 seconds before next run...")
+                time.sleep(5)
     else:
-        # Interactive mode
         print("Available frameworks:", ", ".join(FRAMEWORKS.keys()))
         print("Available loads:", ", ".join(map(str, TEST_LOADS)))
         print("Available endpoints:", ", ".join(ENDPOINTS.keys()))
         print()
         print("Usage:")
-        print("  Full suite:    python test_carbon_comprehensive.py --suite")
-        print("  Single test:   python test_carbon_comprehensive.py -f fastapi -l 100 -e light")
-        print("  Help:          python test_carbon_comprehensive.py --help")
+        print("  Full suite (5 runs):  python test_carbon_comprehensive.py --suite")
+        print("  Suite (3 runs):       python test_carbon_comprehensive.py --suite -r 3")
+        print("  Single test:          python test_carbon_comprehensive.py -f fastapi -l 100 -e light")
+        print("  Single (3 runs):      python test_carbon_comprehensive.py -f fastapi -l 100 -e light -r 3")
+        print("  Help:                 python test_carbon_comprehensive.py --help")
