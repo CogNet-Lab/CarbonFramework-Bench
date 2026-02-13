@@ -1,0 +1,9 @@
+# Python requirements for carbon testing scripts
+
+# Core testing dependencies
+codecarbon>=2.3.4
+requests>=2.31.0
+
+# Optional but recommended
+pandas>=2.0.0
+matplotlib>=3.7.0

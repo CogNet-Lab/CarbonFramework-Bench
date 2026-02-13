@@ -1,0 +1,25 @@
+{
+  "framework": "Django",
+  "framework_key": "django",
+  "load_size": 10000,
+  "endpoint_name": "heavy",
+  "endpoint_path": "/api/v1/weather/analytics/heavy",
+  "timestamp": "2026-02-12T20:29:02.033896",
+  "duration_seconds": 18.28,
+  "test_duration_seconds": 18.28,
+  "emissions_kg": 0.000145,
+  "emissions_g": 0.145,
+  "success_count": 10000,
+  "error_count": 0,
+  "success_rate": 100.0,
+  "requests_per_second": 547.16,
+  "avg_emissions_per_request_mg": 0.015,
+  "response_time_stats": {
+    "min_ms": 9.95,
+    "max_ms": 336.7,
+    "mean_ms": 180.5,
+    "median_ms": 176.86,
+    "p95_ms": 209.74,
+    "p99_ms": 293.28
+  }
+}

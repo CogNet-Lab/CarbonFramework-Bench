@@ -1,0 +1,25 @@
+{
+  "framework": "Spring Boot",
+  "framework_key": "springboot",
+  "load_size": 1000,
+  "endpoint_name": "light",
+  "endpoint_path": "/api/v1/weather/analytics/light",
+  "timestamp": "2026-02-12T20:29:45.581994",
+  "duration_seconds": 1.47,
+  "test_duration_seconds": 1.47,
+  "emissions_kg": 1.3e-05,
+  "emissions_g": 0.013,
+  "success_count": 1000,
+  "error_count": 0,
+  "success_rate": 100.0,
+  "requests_per_second": 682.47,
+  "avg_emissions_per_request_mg": 0.013,
+  "response_time_stats": {
+    "min_ms": 9.06,
+    "max_ms": 242.0,
+    "mean_ms": 88.72,
+    "median_ms": 83.08,
+    "p95_ms": 169.64,
+    "p99_ms": 210.14
+  }
+}

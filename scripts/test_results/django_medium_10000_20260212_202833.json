@@ -1,0 +1,25 @@
+{
+  "framework": "Django",
+  "framework_key": "django",
+  "load_size": 10000,
+  "endpoint_name": "medium",
+  "endpoint_path": "/api/v1/weather/analytics/medium",
+  "timestamp": "2026-02-12T20:28:33.937671",
+  "duration_seconds": 14.47,
+  "test_duration_seconds": 14.46,
+  "emissions_kg": 0.000121,
+  "emissions_g": 0.121,
+  "success_count": 10000,
+  "error_count": 0,
+  "success_rate": 100.0,
+  "requests_per_second": 691.78,
+  "avg_emissions_per_request_mg": 0.012,
+  "response_time_stats": {
+    "min_ms": 10.21,
+    "max_ms": 404.9,
+    "mean_ms": 139.35,
+    "median_ms": 133.03,
+    "p95_ms": 207.89,
+    "p99_ms": 300.12
+  }
+}

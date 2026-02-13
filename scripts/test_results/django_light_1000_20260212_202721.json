@@ -1,0 +1,25 @@
+{
+  "framework": "Django",
+  "framework_key": "django",
+  "load_size": 1000,
+  "endpoint_name": "light",
+  "endpoint_path": "/api/v1/weather/analytics/light",
+  "timestamp": "2026-02-12T20:27:21.708250",
+  "duration_seconds": 1.37,
+  "test_duration_seconds": 1.37,
+  "emissions_kg": 1.2e-05,
+  "emissions_g": 0.012,
+  "success_count": 1000,
+  "error_count": 0,
+  "success_rate": 100.0,
+  "requests_per_second": 728.42,
+  "avg_emissions_per_request_mg": 0.012,
+  "response_time_stats": {
+    "min_ms": 10.8,
+    "max_ms": 254.57,
+    "mean_ms": 96.53,
+    "median_ms": 89.47,
+    "p95_ms": 173.71,
+    "p99_ms": 199.44
+  }
+}

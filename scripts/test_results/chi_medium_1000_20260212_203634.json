@@ -1,0 +1,25 @@
+{
+  "framework": "Chi",
+  "framework_key": "chi",
+  "load_size": 1000,
+  "endpoint_name": "medium",
+  "endpoint_path": "/api/v1/weather/analytics/medium",
+  "timestamp": "2026-02-12T20:36:34.936102",
+  "duration_seconds": 1.63,
+  "test_duration_seconds": 1.62,
+  "emissions_kg": 2e-05,
+  "emissions_g": 0.02,
+  "success_count": 1000,
+  "error_count": 0,
+  "success_rate": 100.0,
+  "requests_per_second": 616.37,
+  "avg_emissions_per_request_mg": 0.02,
+  "response_time_stats": {
+    "min_ms": 10.84,
+    "max_ms": 234.83,
+    "mean_ms": 99.05,
+    "median_ms": 97.29,
+    "p95_ms": 169.57,
+    "p99_ms": 209.29
+  }
+}

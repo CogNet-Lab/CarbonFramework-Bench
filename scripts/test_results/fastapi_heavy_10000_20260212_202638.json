@@ -1,0 +1,25 @@
+{
+  "framework": "FastAPI",
+  "framework_key": "fastapi",
+  "load_size": 10000,
+  "endpoint_name": "heavy",
+  "endpoint_path": "/api/v1/weather/analytics/heavy",
+  "timestamp": "2026-02-12T20:26:38.686150",
+  "duration_seconds": 19.28,
+  "test_duration_seconds": 19.27,
+  "emissions_kg": 0.000154,
+  "emissions_g": 0.154,
+  "success_count": 1940,
+  "error_count": 8060,
+  "success_rate": 19.4,
+  "requests_per_second": 518.94,
+  "avg_emissions_per_request_mg": 0.015,
+  "response_time_stats": {
+    "min_ms": 18.32,
+    "max_ms": 691.22,
+    "mean_ms": 232.98,
+    "median_ms": 208.35,
+    "p95_ms": 422.12,
+    "p99_ms": 506.15
+  }
+}

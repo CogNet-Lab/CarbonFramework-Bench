@@ -1,0 +1,25 @@
+{
+  "framework": "Chi",
+  "framework_key": "chi",
+  "load_size": 1000,
+  "endpoint_name": "heavy",
+  "endpoint_path": "/api/v1/weather/analytics/heavy",
+  "timestamp": "2026-02-12T20:36:45.580733",
+  "duration_seconds": 1.71,
+  "test_duration_seconds": 1.71,
+  "emissions_kg": 1.7e-05,
+  "emissions_g": 0.017,
+  "success_count": 1000,
+  "error_count": 0,
+  "success_rate": 100.0,
+  "requests_per_second": 585.55,
+  "avg_emissions_per_request_mg": 0.017,
+  "response_time_stats": {
+    "min_ms": 9.91,
+    "max_ms": 286.37,
+    "mean_ms": 105.08,
+    "median_ms": 102.24,
+    "p95_ms": 192.97,
+    "p99_ms": 231.75
+  }
+}

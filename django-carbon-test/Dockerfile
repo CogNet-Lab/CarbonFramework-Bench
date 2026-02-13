@@ -1,0 +1,14 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+RUN python manage.py migrate --noinput || true
+
+EXPOSE 8000
+
+CMD ["gunicorn", "weather_service.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "1"]

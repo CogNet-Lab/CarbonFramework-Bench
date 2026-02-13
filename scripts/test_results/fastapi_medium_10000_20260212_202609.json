@@ -1,0 +1,25 @@
+{
+  "framework": "FastAPI",
+  "framework_key": "fastapi",
+  "load_size": 10000,
+  "endpoint_name": "medium",
+  "endpoint_path": "/api/v1/weather/analytics/medium",
+  "timestamp": "2026-02-12T20:26:09.227880",
+  "duration_seconds": 25.74,
+  "test_duration_seconds": 25.73,
+  "emissions_kg": 0.000219,
+  "emissions_g": 0.219,
+  "success_count": 8145,
+  "error_count": 1855,
+  "success_rate": 81.45,
+  "requests_per_second": 388.65,
+  "avg_emissions_per_request_mg": 0.022,
+  "response_time_stats": {
+    "min_ms": 15.94,
+    "max_ms": 478.3,
+    "mean_ms": 272.71,
+    "median_ms": 276.52,
+    "p95_ms": 354.6,
+    "p99_ms": 399.08
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "framework": "Spring Boot",
+  "framework_key": "springboot",
+  "load_size": 1000,
+  "endpoint_name": "medium",
+  "endpoint_path": "/api/v1/weather/analytics/medium",
+  "timestamp": "2026-02-12T20:29:56.166940",
+  "duration_seconds": 1.48,
+  "test_duration_seconds": 1.48,
+  "emissions_kg": 1.3e-05,
+  "emissions_g": 0.013,
+  "success_count": 1000,
+  "error_count": 0,
+  "success_rate": 100.0,
+  "requests_per_second": 674.99,
+  "avg_emissions_per_request_mg": 0.013,
+  "response_time_stats": {
+    "min_ms": 8.71,
+    "max_ms": 270.97,
+    "mean_ms": 90.13,
+    "median_ms": 85.89,
+    "p95_ms": 171.46,
+    "p99_ms": 208.52
+  }
+}

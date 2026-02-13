@@ -1,0 +1,25 @@
+{
+  "framework": "Chi",
+  "framework_key": "chi",
+  "load_size": 10000,
+  "endpoint_name": "light",
+  "endpoint_path": "/api/v1/weather/analytics/light",
+  "timestamp": "2026-02-12T20:37:13.343646",
+  "duration_seconds": 17.93,
+  "test_duration_seconds": 17.91,
+  "emissions_kg": 0.000156,
+  "emissions_g": 0.156,
+  "success_count": 10000,
+  "error_count": 0,
+  "success_rate": 100.0,
+  "requests_per_second": 558.25,
+  "avg_emissions_per_request_mg": 0.016,
+  "response_time_stats": {
+    "min_ms": 9.41,
+    "max_ms": 489.47,
+    "mean_ms": 158.64,
+    "median_ms": 144.18,
+    "p95_ms": 292.23,
+    "p99_ms": 377.17
+  }
+}

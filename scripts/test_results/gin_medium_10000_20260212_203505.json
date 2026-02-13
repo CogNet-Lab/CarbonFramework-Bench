@@ -1,0 +1,25 @@
+{
+  "framework": "Gin",
+  "framework_key": "gin",
+  "load_size": 10000,
+  "endpoint_name": "medium",
+  "endpoint_path": "/api/v1/weather/analytics/medium",
+  "timestamp": "2026-02-12T20:35:05.541489",
+  "duration_seconds": 26.84,
+  "test_duration_seconds": 26.83,
+  "emissions_kg": 0.000213,
+  "emissions_g": 0.213,
+  "success_count": 7805,
+  "error_count": 2195,
+  "success_rate": 78.05,
+  "requests_per_second": 372.77,
+  "avg_emissions_per_request_mg": 0.021,
+  "response_time_stats": {
+    "min_ms": 23.5,
+    "max_ms": 655.05,
+    "mean_ms": 279.1,
+    "median_ms": 272.44,
+    "p95_ms": 426.27,
+    "p99_ms": 546.64
+  }
+}

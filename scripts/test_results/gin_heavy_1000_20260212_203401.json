@@ -1,0 +1,25 @@
+{
+  "framework": "Gin",
+  "framework_key": "gin",
+  "load_size": 1000,
+  "endpoint_name": "heavy",
+  "endpoint_path": "/api/v1/weather/analytics/heavy",
+  "timestamp": "2026-02-12T20:34:01.574241",
+  "duration_seconds": 1.65,
+  "test_duration_seconds": 1.64,
+  "emissions_kg": 1.5e-05,
+  "emissions_g": 0.015,
+  "success_count": 1000,
+  "error_count": 0,
+  "success_rate": 100.0,
+  "requests_per_second": 608.57,
+  "avg_emissions_per_request_mg": 0.015,
+  "response_time_stats": {
+    "min_ms": 8.91,
+    "max_ms": 276.85,
+    "mean_ms": 97.01,
+    "median_ms": 91.61,
+    "p95_ms": 175.68,
+    "p99_ms": 225.76
+  }
+}
