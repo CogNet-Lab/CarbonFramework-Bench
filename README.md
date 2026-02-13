@@ -408,6 +408,20 @@ cd chi-carbon-test && docker-compose down -v && cd ..
 
 ---
 
+## Citation
+
+If you use this framework in your research, please cite:
+
+```bibtex
+@software{CarbonFramework_Bench_2026,
+  title={CarbonFramework-Bench: A Comprehensive Web Framework Carbon Footprint Benchmarking Tool},
+  author={CogNet Lab},
+  year={2026},
+  url={https://github.com/CogNet-Lab/CarbonFramework-Bench},
+  license={MIT}
+}
+```
+
 ## References
 
 - [CodeCarbon](https://github.com/mlco2/codecarbon) - Track carbon emissions from compute
