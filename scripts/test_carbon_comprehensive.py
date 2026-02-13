@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import csv
+import threading
 from datetime import datetime
 from codecarbon import EmissionsTracker
 import requests
@@ -137,6 +138,133 @@ class LoadTester:
             "p95_ms": round(times_sorted[int(len(times_sorted) * 0.95)], 2),
             "p99_ms": round(times_sorted[int(len(times_sorted) * 0.99)], 2),
         }
+
+
+class ContainerMonitor:
+    """Polls Docker container CPU% and memory via `docker stats --no-stream` in a background thread."""
+
+    def __init__(self, container_name, interval=1.0):
+        self.container_name = container_name
+        self.interval = interval
+        self.cpu_samples = []
+        self.mem_samples = []
+        self._running = False
+        self._thread = None
+        self._error = None
+
+    @staticmethod
+    def _parse_cpu(cpu_str):
+        """Parse '2.50%' -> 2.50 float."""
+        try:
+            return float(cpu_str.strip().rstrip("%"))
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _parse_mem(mem_str):
+        """Parse '45.5MiB / 1.5GiB' -> 45.5 (MB). Handles GiB, MiB, KiB, B."""
+        try:
+            usage_part = mem_str.split("/")[0].strip()
+            value_str = ""
+            unit = ""
+            for ch in usage_part:
+                if ch.isdigit() or ch == ".":
+                    value_str += ch
+                else:
+                    unit += ch
+            value = float(value_str)
+            unit = unit.strip().lower()
+            if "gib" in unit:
+                return value * 1024
+            elif "mib" in unit:
+                return value
+            elif "kib" in unit:
+                return value / 1024
+            elif "b" in unit:
+                return value / (1024 * 1024)
+            return value  # assume MiB
+        except (ValueError, TypeError, IndexError):
+            return None
+
+    def _poll(self):
+        """Background thread: poll docker stats until stopped."""
+        while self._running:
+            try:
+                result = subprocess.run(
+                    ["docker", "stats", self.container_name, "--no-stream",
+                     "--format", "{{.CPUPerc}}\t{{.MemUsage}}"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    parts = result.stdout.strip().split("\t")
+                    if len(parts) >= 2:
+                        cpu = self._parse_cpu(parts[0])
+                        mem = self._parse_mem(parts[1])
+                        if cpu is not None:
+                            self.cpu_samples.append(cpu)
+                        if mem is not None:
+                            self.mem_samples.append(mem)
+            except FileNotFoundError:
+                self._error = "Docker CLI not found"
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            except Exception as e:
+                self._error = str(e)
+                break
+
+            # Sleep in small increments for responsive stopping
+            elapsed = 0.0
+            while self._running and elapsed < self.interval:
+                time.sleep(0.1)
+                elapsed += 0.1
+
+    def start(self):
+        """Start background polling."""
+        self._running = True
+        self._thread = threading.Thread(target=self._poll, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        """Stop polling and return result dict."""
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=10)
+
+        result = {
+            "container_name": self.container_name,
+            "sample_count": len(self.cpu_samples),
+            "sample_interval_s": self.interval,
+        }
+
+        if self.cpu_samples:
+            result["cpu_percent_avg"] = round(statistics.mean(self.cpu_samples), 2)
+            result["cpu_percent_max"] = round(max(self.cpu_samples), 2)
+            result["cpu_percent_min"] = round(min(self.cpu_samples), 2)
+            result["cpu_percent_samples"] = [round(s, 2) for s in self.cpu_samples]
+        else:
+            result["cpu_percent_avg"] = None
+            result["cpu_percent_max"] = None
+            result["cpu_percent_min"] = None
+            result["cpu_percent_samples"] = []
+
+        if self.mem_samples:
+            result["memory_mb_avg"] = round(statistics.mean(self.mem_samples), 2)
+            result["memory_mb_max"] = round(max(self.mem_samples), 2)
+            result["memory_mb_min"] = round(min(self.mem_samples), 2)
+            result["memory_mb_baseline"] = round(self.mem_samples[0], 2)
+            result["memory_mb_samples"] = [round(s, 2) for s in self.mem_samples]
+        else:
+            result["memory_mb_avg"] = None
+            result["memory_mb_max"] = None
+            result["memory_mb_min"] = None
+            result["memory_mb_baseline"] = None
+            result["memory_mb_samples"] = []
+
+        if self._error:
+            result["error"] = self._error
+
+        return result
 
 
 def check_health(framework, port):
@@ -290,20 +418,28 @@ def run_test(framework_key, load_size, endpoint_name, endpoint_path, run_id=None
     )
     
     print(f"\n🚀 Starting load test and carbon tracking...")
-    
+
     # Start tracking
     tracker.start()
     test_start = time.time()
-    
+
+    # Start container resource monitoring (app container only, not DB)
+    container_name = f"{framework_config['folder']}-app-1"
+    monitor = ContainerMonitor(container_name)
+    monitor.start()
+
     # Run load test (use concurrent for large loads)
     if load_size <= 100:
         test_duration = tester.run_sequential()
     else:
         workers = min(100, load_size // 10)
         test_duration = tester.run_concurrent(max_workers=workers)
-    
+
     test_end = time.time()
     actual_duration = test_end - test_start
+
+    # Stop container monitor (captures load-phase metrics only, not padding)
+    container_metrics = monitor.stop()
 
     # Pad with sleep if --min-duration requires a longer measurement window
     padding_seconds = 0.0
@@ -357,6 +493,7 @@ def run_test(framework_key, load_size, endpoint_name, endpoint_path, run_id=None
         "response_time_stats": stats,
         "energy_metadata": energy_metadata,
         "measurement_reliability": reliability,
+        "container_metrics": container_metrics,
     }
     if padding_seconds > 0:
         results["padding_seconds"] = round(padding_seconds, 2)
@@ -410,6 +547,22 @@ def print_summary(results):
     print(f"  Max:                  {stats['max_ms']}ms")
     print()
 
+    # Container Resource Usage
+    cm = results.get("container_metrics", {})
+    if cm and cm.get("sample_count", 0) > 0:
+        print(f"🐳 Container Resource Usage ({cm.get('container_name', 'N/A')}):")
+        print(f"  CPU:  avg={cm.get('cpu_percent_avg', 'N/A')}%, max={cm.get('cpu_percent_max', 'N/A')}%  ({cm['sample_count']} samples)")
+        mem_avg = cm.get('memory_mb_avg')
+        mem_max = cm.get('memory_mb_max')
+        mem_base = cm.get('memory_mb_baseline')
+        if mem_avg is not None:
+            print(f"  RAM:  avg={mem_avg}MB, max={mem_max}MB, baseline={mem_base}MB")
+    elif cm and cm.get("error"):
+        print(f"🐳 Container Resource Usage: Error — {cm['error']}")
+    else:
+        print(f"🐳 Container Resource Usage: No samples collected")
+    print()
+
     # Energy Measurement Details
     em = results.get("energy_metadata", {})
     if em and "error" not in em:
@@ -430,6 +583,139 @@ def print_summary(results):
     elif em and "error" in em:
         print(f"🔬 Energy Measurement Details: Error — {em['error']}")
     print("=" * 80)
+
+
+def measure_startup_time(framework_key, timeout=120):
+    """Measure cold-start time by restarting the app container and polling health.
+
+    Returns a dict with framework info and startup_time_seconds.
+    """
+    framework_config = FRAMEWORKS[framework_key]
+    container_name = f"{framework_config['folder']}-app-1"
+    port = framework_config["port"]
+    health_url = f"http://localhost:{port}/api/v1/health"
+
+    print(f"\n  Measuring startup for {framework_config['name']} ({container_name})...")
+
+    # Stop the container
+    try:
+        subprocess.run(["docker", "stop", container_name],
+                        capture_output=True, text=True, timeout=30)
+    except Exception as e:
+        return {
+            "framework_key": framework_key,
+            "framework": framework_config["name"],
+            "container_name": container_name,
+            "startup_time_seconds": None,
+            "error": f"Failed to stop container: {e}",
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    time.sleep(2)  # Wait for full stop
+
+    # Start the container and time until health responds
+    start_time = time.time()
+    try:
+        subprocess.run(["docker", "start", container_name],
+                        capture_output=True, text=True, timeout=30)
+    except Exception as e:
+        return {
+            "framework_key": framework_key,
+            "framework": framework_config["name"],
+            "container_name": container_name,
+            "startup_time_seconds": None,
+            "error": f"Failed to start container: {e}",
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    # Poll health endpoint
+    while time.time() - start_time < timeout:
+        try:
+            resp = requests.get(health_url, timeout=2)
+            if resp.status_code == 200:
+                startup_time = time.time() - start_time
+                print(f"    {framework_config['name']}: {startup_time:.2f}s")
+                return {
+                    "framework_key": framework_key,
+                    "framework": framework_config["name"],
+                    "container_name": container_name,
+                    "startup_time_seconds": round(startup_time, 3),
+                    "timestamp": datetime.now().isoformat(),
+                }
+        except requests.exceptions.ConnectionError:
+            pass
+        except Exception:
+            pass
+        time.sleep(0.5)
+
+    return {
+        "framework_key": framework_key,
+        "framework": framework_config["name"],
+        "container_name": container_name,
+        "startup_time_seconds": None,
+        "error": f"Health endpoint did not respond within {timeout}s",
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
+def run_startup_benchmark(frameworks=None, num_runs=3):
+    """Measure container cold-start times for all (or selected) frameworks.
+
+    Uses round-robin ordering across runs for temporal fairness.
+    Results are saved to test_results/startup_times_{timestamp}.json.
+    """
+    if frameworks is None:
+        frameworks = list(FRAMEWORKS.keys())
+
+    print("\n" + "=" * 80)
+    print("  CONTAINER STARTUP TIME BENCHMARK")
+    print("=" * 80)
+    print(f"  Frameworks: {', '.join([FRAMEWORKS[f]['name'] for f in frameworks])}")
+    print(f"  Runs: {num_runs}")
+    print()
+
+    all_results = []
+
+    for run_id in range(1, num_runs + 1):
+        print(f"\n  --- Round {run_id}/{num_runs} ---")
+        for fw_key in frameworks:
+            result = measure_startup_time(fw_key)
+            result["run_id"] = run_id
+            all_results.append(result)
+
+            # Wait between measurements for stabilization
+            time.sleep(5)
+
+    # Save results
+    os.makedirs("test_results", exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"test_results/startup_times_{timestamp}.json"
+    with open(filename, "w") as f:
+        json.dump(all_results, f, indent=2)
+
+    # Print summary table
+    print(f"\n\n{'='*80}")
+    print("  STARTUP TIME SUMMARY")
+    print(f"{'='*80}")
+    print(f"\n  {'Framework':<15} {'Runs':<8} {'Mean (s)':<12} {'Std (s)':<12} {'Min (s)':<12} {'Max (s)':<12}")
+    print("  " + "-" * 70)
+
+    for fw_key in frameworks:
+        fw_results = [r for r in all_results
+                      if r["framework_key"] == fw_key and r.get("startup_time_seconds") is not None]
+        times = [r["startup_time_seconds"] for r in fw_results]
+        if times:
+            mean_t = statistics.mean(times)
+            std_t = statistics.stdev(times) if len(times) >= 2 else 0.0
+            print(f"  {FRAMEWORKS[fw_key]['name']:<15} {len(times):<8} {mean_t:<12.3f} {std_t:<12.3f} "
+                  f"{min(times):<12.3f} {max(times):<12.3f}")
+        else:
+            print(f"  {FRAMEWORKS[fw_key]['name']:<15} {'0':<8} {'N/A':<12} {'N/A':<12} {'N/A':<12} {'N/A':<12}")
+
+    print(f"\n  Results saved to: {filename}")
+    print()
+
+    return all_results
 
 
 def run_comparison_suite(frameworks=None, loads=None, endpoints=None, num_runs=5, min_duration=0):
@@ -528,10 +814,17 @@ if __name__ == "__main__":
                         help="Minimum test duration in seconds. If the load test finishes "
                              "faster, pad with sleep so CodeCarbon captures at least one "
                              "sampling window. Use 15 for reliable measurements.")
+    parser.add_argument("--measure-startup", action="store_true",
+                        help="Measure container cold-start times (restarts containers)")
+    parser.add_argument("--startup-runs", type=int, default=3,
+                        help="Number of startup measurement runs (default: 3)")
 
     args = parser.parse_args()
 
-    if args.suite:
+    if args.measure_startup:
+        fws = [args.framework] if args.framework else None
+        run_startup_benchmark(frameworks=fws, num_runs=args.startup_runs)
+    elif args.suite:
         num_runs = args.runs if args.runs is not None else 5
         run_comparison_suite(num_runs=num_runs, min_duration=args.min_duration)
     elif args.framework and args.load and args.endpoint:

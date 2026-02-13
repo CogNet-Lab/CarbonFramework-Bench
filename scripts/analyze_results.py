@@ -39,6 +39,8 @@ METRIC_EXTRACTORS = {
     "emissions_per_request_mg": lambda r: r.get("avg_emissions_per_request_mg", 0),
     "rps": lambda r: r.get("requests_per_second", 0),
     "response_time_ms": lambda r: r.get("response_time_stats", {}).get("mean_ms", 0),
+    "cpu_percent_avg": lambda r: (r.get("container_metrics") or {}).get("cpu_percent_avg"),
+    "memory_mb_avg": lambda r: (r.get("container_metrics") or {}).get("memory_mb_avg"),
 }
 
 METRIC_LABELS = {
@@ -46,6 +48,8 @@ METRIC_LABELS = {
     "emissions_per_request_mg": "Emissions/Request (mg CO2)",
     "rps": "Requests/sec",
     "response_time_ms": "Avg Response Time (ms)",
+    "cpu_percent_avg": "Avg Container CPU (%)",
+    "memory_mb_avg": "Avg Container Memory (MB)",
 }
 
 # Lower is better for emissions and response time; higher is better for rps
@@ -54,6 +58,8 @@ METRIC_DIRECTION = {
     "emissions_per_request_mg": "lower",
     "rps": "higher",
     "response_time_ms": "lower",
+    "cpu_percent_avg": "lower",
+    "memory_mb_avg": "lower",
 }
 
 ALPHA = 0.05  # significance level
@@ -66,9 +72,13 @@ RELIABILITY_THRESHOLDS = {
 
 
 def _extract_metric_values(results: List[Dict], metric: str) -> List[float]:
-    """Extract a list of metric values from a list of result dicts."""
+    """Extract a list of metric values from a list of result dicts.
+
+    Filters out None values so that old results without container_metrics
+    don't break downstream calculations.
+    """
     extractor = METRIC_EXTRACTORS[metric]
-    return [extractor(r) for r in results]
+    return [v for v in (extractor(r) for r in results) if v is not None]
 
 
 def group_by_config(results: List[Dict]) -> Dict[Tuple[str, int, str], List[Dict]]:
@@ -273,24 +283,31 @@ def calculate_statistics(results: List[Dict]) -> Dict:
 
     out: Dict = {"count": len(results)}
 
-    for metric, label in [
-        ("emissions_g", "emissions_g"),
-        ("emissions_per_request_mg", "emissions_per_request_mg"),
-        ("rps", "rps"),
-        ("response_time_ms", "response_time_ms"),
+    avg_key_map = {
+        "emissions_g": "avg_emissions_g",
+        "emissions_per_request_mg": "avg_emissions_per_request_mg",
+        "rps": "avg_rps",
+        "response_time_ms": "avg_response_time_ms",
+        "cpu_percent_avg": "avg_cpu_percent",
+        "memory_mb_avg": "avg_memory_mb",
+    }
+
+    for metric in [
+        "emissions_g", "emissions_per_request_mg", "rps", "response_time_ms",
+        "cpu_percent_avg", "memory_mb_avg",
     ]:
         values = _extract_metric_values(results, metric)
         n = len(values)
-        mean_val = statistics.mean(values) if values else 0.0
+        if not values:
+            # Skip metrics with no data (e.g., container metrics on old results)
+            if metric in avg_key_map:
+                out[avg_key_map[metric]] = None
+            continue
+        mean_val = statistics.mean(values)
 
         # Backward-compatible avg_ keys
-        avg_key_map = {
-            "emissions_g": "avg_emissions_g",
-            "emissions_per_request_mg": "avg_emissions_per_request_mg",
-            "rps": "avg_rps",
-            "response_time_ms": "avg_response_time_ms",
-        }
-        out[avg_key_map[metric]] = round(mean_val, 3 if "emissions" in metric else 2)
+        if metric in avg_key_map:
+            out[avg_key_map[metric]] = round(mean_val, 3 if "emissions" in metric else 2)
 
         # Extended statistics
         if n >= 2:
@@ -588,6 +605,10 @@ def print_statistical_summary(results: List[Dict]):
         label = METRIC_LABELS[metric]
         direction = METRIC_DIRECTION[metric]
 
+        # Skip metrics with no data (e.g., container metrics on old results)
+        if sum(len(v) for v in fw_groups.values()) == 0:
+            continue
+
         # --- Descriptive statistics with CIs ---
         print(f"\n--- {label} ---")
         print(f"{'Framework':<15} {'n':<5} {'Mean':<14} {'Std Dev':<14} {'95% CI':<28}")
@@ -675,6 +696,10 @@ def print_per_config_statistical_analysis(results: List[Dict]):
             for fw_key, items in fw_results.items():
                 fw_groups[fw_key] = _extract_metric_values(items, metric)
 
+            # Skip if no data
+            if sum(len(v) for v in fw_groups.values()) == 0:
+                continue
+
             anova = run_anova(fw_groups, metric)
             winner = determine_statistical_winner(fw_groups, metric, direction)
 
@@ -698,9 +723,9 @@ def print_comparison_table(results: List[Dict], group_by: str = "framework"):
     print("=" * 100)
 
     # Table header
-    print(f"\n{'Framework':<15} {'Load':<8} {'Endpoint':<10} {'Emissions':<15} {'Per Req':<12} {'RPS':<10} {'Avg Time':<12}")
-    print(f"{'':15} {'':8} {'':10} {'(g CO2)':<15} {'(mg CO2)':<12} {'':10} {'(ms)':<12}")
-    print("-" * 100)
+    print(f"\n{'Framework':<15} {'Load':<8} {'Endpoint':<10} {'Emissions':<15} {'Per Req':<12} {'RPS':<10} {'Avg Time':<12} {'CPU%':<8} {'Mem MB':<8}")
+    print(f"{'':15} {'':8} {'':10} {'(g CO2)':<15} {'(mg CO2)':<12} {'':10} {'(ms)':<12} {'':8} {'':8}")
+    print("-" * 110)
 
     # Sort by framework name
     for key in sorted(grouped.keys()):
@@ -714,9 +739,13 @@ def print_comparison_table(results: List[Dict], group_by: str = "framework"):
             rps = item.get('requests_per_second', 0)
             avg_time = item.get('response_time_stats', {}).get('mean_ms', 0)
 
-            print(f"{framework:<15} {load:<8} {endpoint:<10} {emissions:<15.3f} {per_req:<12.3f} {rps:<10.2f} {avg_time:<12.2f}")
+            cm = item.get('container_metrics') or {}
+            cpu_str = f"{cm['cpu_percent_avg']:.1f}" if cm.get('cpu_percent_avg') is not None else "N/A"
+            mem_str = f"{cm['memory_mb_avg']:.1f}" if cm.get('memory_mb_avg') is not None else "N/A"
 
-    print("=" * 100)
+            print(f"{framework:<15} {load:<8} {endpoint:<10} {emissions:<15.3f} {per_req:<12.3f} {rps:<10.2f} {avg_time:<12.2f} {cpu_str:<8} {mem_str:<8}")
+
+    print("=" * 110)
 
 
 def print_framework_summary(results: List[Dict]):
@@ -724,12 +753,12 @@ def print_framework_summary(results: List[Dict]):
 
     grouped = group_by_criteria(results, "framework_key")
 
-    print("\n" + "=" * 100)
+    print("\n" + "=" * 120)
     print("  FRAMEWORK SUMMARY (All Tests Combined)")
-    print("=" * 100)
-    print(f"\n{'Framework':<15} {'Tests':<8} {'Avg Emissions':<18} {'Per Request':<15} {'Avg RPS':<12} {'Avg Time':<12}")
-    print(f"{'':15} {'':8} {'(g CO2)':<18} {'(mg CO2)':<15} {'':12} {'(ms)':<12}")
-    print("-" * 100)
+    print("=" * 120)
+    print(f"\n{'Framework':<15} {'Tests':<8} {'Avg Emissions':<18} {'Per Request':<15} {'Avg RPS':<12} {'Avg Time':<12} {'Avg CPU%':<10} {'Avg Mem MB':<10}")
+    print(f"{'':15} {'':8} {'(g CO2)':<18} {'(mg CO2)':<15} {'':12} {'(ms)':<12} {'':10} {'':10}")
+    print("-" * 120)
 
     summaries = []
     for framework_key in sorted(grouped.keys()):
@@ -743,9 +772,12 @@ def print_framework_summary(results: List[Dict]):
             **avg
         })
 
+        cpu_str = f"{avg['avg_cpu_percent']:.1f}" if avg.get('avg_cpu_percent') is not None else "N/A"
+        mem_str = f"{avg['avg_memory_mb']:.1f}" if avg.get('avg_memory_mb') is not None else "N/A"
+
         print(f"{framework_name:<15} {avg['count']:<8} {avg['avg_emissions_g']:<18.3f} "
               f"{avg['avg_emissions_per_request_mg']:<15.3f} {avg['avg_rps']:<12.2f} "
-              f"{avg['avg_response_time_ms']:<12.2f}")
+              f"{avg['avg_response_time_ms']:<12.2f} {cpu_str:<10} {mem_str:<10}")
 
     print("=" * 100)
 
@@ -836,6 +868,63 @@ def print_endpoint_analysis(results: List[Dict]):
 
             print(f"  {framework_name:<15} {avg['count']:<8} {avg['avg_emissions_g']:<15.3f} "
                   f"{avg['avg_emissions_per_request_mg']:<12.3f} {avg['avg_rps']:<10.2f}")
+
+
+# ---------------------------------------------------------------------------
+# Startup time analysis
+# ---------------------------------------------------------------------------
+
+def load_startup_results(directory="test_results"):
+    """Load all startup_times_*.json files from directory."""
+    json_files = glob.glob(os.path.join(directory, "startup_times_*.json"))
+    all_results = []
+    for file_path in json_files:
+        try:
+            with open(file_path, "r") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    all_results.extend(data)
+                else:
+                    all_results.append(data)
+        except Exception as e:
+            print(f"Warning: Could not load {file_path}: {e}")
+    return all_results
+
+
+def print_startup_analysis(startup_results: List[Dict]):
+    """Print startup time analysis to console."""
+    if not startup_results:
+        return
+
+    print("\n" + "=" * 100)
+    print("  CONTAINER STARTUP TIME ANALYSIS")
+    print("=" * 100)
+
+    # Group by framework
+    by_fw: Dict[str, List[float]] = {}
+    for r in startup_results:
+        fw_key = r.get("framework_key", "")
+        t = r.get("startup_time_seconds")
+        if t is not None:
+            by_fw.setdefault(fw_key, []).append(t)
+
+    print(f"\n  {'Framework':<15} {'Runs':<8} {'Mean (s)':<12} {'Std (s)':<12} {'Min (s)':<12} {'Max (s)':<12}")
+    print("  " + "-" * 70)
+
+    for fw_key in sorted(by_fw.keys()):
+        times = by_fw[fw_key]
+        mean_t = statistics.mean(times)
+        std_t = statistics.stdev(times) if len(times) >= 2 else 0.0
+        print(f"  {fw_key:<15} {len(times):<8} {mean_t:<12.3f} {std_t:<12.3f} "
+              f"{min(times):<12.3f} {max(times):<12.3f}")
+
+    # Winner
+    if len(by_fw) >= 2:
+        means = {k: statistics.mean(v) for k, v in by_fw.items()}
+        winner = min(means, key=means.get)
+        print(f"\n  Fastest startup: {winner} ({means[winner]:.3f}s)")
+
+    print()
 
 
 # ---------------------------------------------------------------------------
@@ -934,6 +1023,10 @@ def generate_markdown_report(results: List[Dict], output_file="test_results/REPO
                 direction = METRIC_DIRECTION[metric]
                 fw_groups = _build_framework_metric_groups(results, metric)
 
+                # Skip metrics with no data (e.g., container metrics on old results)
+                if sum(len(v) for v in fw_groups.values()) == 0:
+                    continue
+
                 # 95% CI table
                 f.write(f"### {label}\n\n")
                 f.write("#### Descriptive Statistics (95% CI)\n\n")
@@ -1006,6 +1099,75 @@ def generate_markdown_report(results: List[Dict], output_file="test_results/REPO
                     f"{result.get('response_time_stats', {}).get('mean_ms', 0):.2f} |")
             if num_runs >= 2:
                 f.write(f" {result.get('run_id', '-')} |")
+            f.write("\n")
+
+        # ---- Container Resource Usage ----
+        has_container_metrics = any(
+            (r.get("container_metrics") or {}).get("cpu_percent_avg") is not None
+            for r in results
+        )
+        if has_container_metrics:
+            f.write("\n## Container Resource Usage\n\n")
+            f.write("CPU and memory metrics collected via `docker stats` during load tests (app container only).\n\n")
+            f.write("| Framework | Avg CPU (%) | Peak CPU (%) | Avg Memory (MB) | Peak Memory (MB) | Baseline Memory (MB) |\n")
+            f.write("|-----------|-------------|--------------|-----------------|------------------|---------------------|\n")
+
+            grouped_fw = group_by_criteria(results, "framework_key")
+            for fw_key in sorted(grouped_fw.keys()):
+                items = grouped_fw[fw_key]
+                cpu_avgs = []
+                cpu_maxes = []
+                mem_avgs = []
+                mem_maxes = []
+                mem_baselines = []
+                for item in items:
+                    cm = item.get("container_metrics") or {}
+                    if cm.get("cpu_percent_avg") is not None:
+                        cpu_avgs.append(cm["cpu_percent_avg"])
+                    if cm.get("cpu_percent_max") is not None:
+                        cpu_maxes.append(cm["cpu_percent_max"])
+                    if cm.get("memory_mb_avg") is not None:
+                        mem_avgs.append(cm["memory_mb_avg"])
+                    if cm.get("memory_mb_max") is not None:
+                        mem_maxes.append(cm["memory_mb_max"])
+                    if cm.get("memory_mb_baseline") is not None:
+                        mem_baselines.append(cm["memory_mb_baseline"])
+
+                fw_name = items[0].get("framework", fw_key)
+                cpu_avg_s = f"{statistics.mean(cpu_avgs):.1f}" if cpu_avgs else "N/A"
+                cpu_max_s = f"{max(cpu_maxes):.1f}" if cpu_maxes else "N/A"
+                mem_avg_s = f"{statistics.mean(mem_avgs):.1f}" if mem_avgs else "N/A"
+                mem_max_s = f"{max(mem_maxes):.1f}" if mem_maxes else "N/A"
+                mem_base_s = f"{statistics.mean(mem_baselines):.1f}" if mem_baselines else "N/A"
+                f.write(f"| {fw_name} | {cpu_avg_s} | {cpu_max_s} | {mem_avg_s} | {mem_max_s} | {mem_base_s} |\n")
+            f.write("\n")
+
+        # ---- Container Startup Times ----
+        startup_results = load_startup_results()
+        if startup_results:
+            f.write("\n## Container Startup Times\n\n")
+            f.write("Cold-start time measured from `docker start` to first successful health response.\n\n")
+            f.write("| Framework | Runs | Mean (s) | Std (s) | Min (s) | Max (s) |\n")
+            f.write("|-----------|------|----------|---------|---------|--------|\n")
+
+            startup_by_fw: Dict[str, List[float]] = {}
+            for r in startup_results:
+                fw_key = r.get("framework_key", "")
+                t = r.get("startup_time_seconds")
+                if t is not None:
+                    startup_by_fw.setdefault(fw_key, []).append(t)
+
+            for fw_key in sorted(startup_by_fw.keys()):
+                times = startup_by_fw[fw_key]
+                mean_t = statistics.mean(times)
+                std_t = statistics.stdev(times) if len(times) >= 2 else 0.0
+                f.write(f"| {fw_key} | {len(times)} | {mean_t:.3f} | {std_t:.3f} | "
+                        f"{min(times):.3f} | {max(times):.3f} |\n")
+
+            if len(startup_by_fw) >= 2:
+                means = {k: statistics.mean(v) for k, v in startup_by_fw.items()}
+                winner = min(means, key=means.get)
+                f.write(f"\n**Fastest startup**: {winner} ({means[winner]:.3f}s)\n")
             f.write("\n")
 
         # ---- Key Findings ----
@@ -1086,6 +1248,11 @@ def main():
     print_framework_summary(results)
     print_load_analysis(results)
     print_endpoint_analysis(results)
+
+    # Startup time analysis
+    startup_results = load_startup_results()
+    if startup_results:
+        print_startup_analysis(startup_results)
 
     # Statistical analysis (only when multiple runs available)
     if num_runs >= 2:

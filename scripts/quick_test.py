@@ -21,21 +21,34 @@ def print_usage():
     print("\n Quick Test Runner")
     print("="*60)
     print("\nUsage: python quick_test.py <framework> [load] [endpoint] [runs] [--min-duration N]")
+    print("       python quick_test.py --startup [framework]")
     print("\nFrameworks:", ", ".join(sorted(set(FRAMEWORKS.keys()))))
     print("Loads:      100, 1000, 10000 (default: 100)")
     print("Endpoints:  light, medium, heavy (default: light)")
     print("Runs:       number of independent repetitions (default: 1)")
     print("\nOptions:")
     print("  --min-duration N  Pad short tests to N seconds for reliable energy measurement")
+    print("  --startup [fw]    Measure container cold-start times (restarts containers)")
     print("\nExamples:")
     print("  python quick_test.py fastapi")
     print("  python quick_test.py django 1000")
     print("  python quick_test.py gin 10000 heavy")
     print("  python quick_test.py fastapi 100 light 5    # 5 independent runs")
     print("  python quick_test.py fastapi 100 light 1 --min-duration 15")
+    print("  python quick_test.py --startup              # all frameworks")
+    print("  python quick_test.py --startup fastapi      # single framework")
     print()
 
 def main():
+    # Handle --startup before positional arg parsing
+    if len(sys.argv) >= 2 and sys.argv[1] == "--startup":
+        fw_arg = sys.argv[2] if len(sys.argv) > 2 else None
+        cmd = ["python", "test_carbon_comprehensive.py", "--measure-startup"]
+        if fw_arg:
+            cmd.extend(["-f", fw_arg.lower()])
+        subprocess.run(cmd)
+        return
+
     # Extract --min-duration before positional arg parsing
     min_duration = None
     argv = list(sys.argv[1:])

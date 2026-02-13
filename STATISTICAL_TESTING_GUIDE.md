@@ -243,3 +243,70 @@ These limitations are inherent to the measurement platform and are documented in
 2. **System-wide tracking**: CodeCarbon uses machine-level tracking, capturing energy from all processes — not just the framework under test. Background process energy is included as noise.
 3. **TDP-based power on macOS/non-RAPL systems**: On systems without Intel RAPL (e.g., Apple Silicon), CodeCarbon uses TDP (Thermal Design Power) as a constant power estimate. This does not capture workload-dependent power variation.
 4. **CSV overwrite**: CodeCarbon CSV filenames use `test_id` without run_id, so multiple runs overwrite the same file. Metadata is extracted immediately after each `tracker.stop()` to avoid data loss.
+
+## Container Resource Metrics
+
+### Overview
+
+In addition to energy and performance metrics, the framework now captures container-level CPU and memory usage during each load test, and supports separate container cold-start time measurement.
+
+### Metrics Collected
+
+| Metric | Source | Description |
+|--------|--------|-------------|
+| **Avg Container CPU (%)** | `docker stats` polling | Mean CPU utilization during load phase |
+| **Peak Container CPU (%)** | `docker stats` polling | Maximum CPU sample during load phase |
+| **Avg Container Memory (MB)** | `docker stats` polling | Mean memory usage during load phase |
+| **Peak Container Memory (MB)** | `docker stats` polling | Maximum memory sample during load phase |
+| **Baseline Memory (MB)** | `docker stats` first sample | Memory at start of load (pre-load footprint) |
+| **Startup Time (s)** | Health endpoint polling | Time from `docker start` to first successful health response |
+
+### How They're Collected
+
+**Container monitoring** uses a `ContainerMonitor` class that runs `docker stats --no-stream` in a background thread at 1-second intervals. Key design decisions:
+
+- **App container only**: The PostgreSQL instance is identical across all frameworks, so database metrics add noise without analytical value. Only the framework app container is monitored.
+- **Load phase only**: The monitor starts immediately before the load test and stops immediately after, before any `--min-duration` padding sleep. This ensures metrics reflect actual workload resource usage, not idle time.
+- **No new dependencies**: Uses only Python stdlib (`threading`, `subprocess`) and the Docker CLI that's already required by the project.
+
+**Startup time** is measured separately via `--measure-startup`:
+1. `docker stop` the app container
+2. Wait 2s for full stop
+3. `docker start` and record start time
+4. Poll health endpoint every 0.5s until 200 response
+5. Startup time = elapsed time from step 3 to step 4
+
+### Statistical Treatment
+
+Container resource metrics (CPU%, Memory) are treated as additional metrics in the analysis pipeline:
+
+- **Descriptive statistics**: Mean, std dev, 95% CIs per framework (same as emissions/RPS)
+- **ANOVA**: One-way ANOVA across frameworks to detect differences
+- **Pairwise tests**: Welch's t-tests with Bonferroni correction
+- **Effect sizes**: Cohen's d with the same classification thresholds
+- **Winners**: Significance-qualified (`[SIG]`/`[N.S.]`) — lower is better for both CPU% and memory
+
+Startup times are analyzed separately (from `startup_times_*.json` files) with mean/std/min/max per framework.
+
+### Backward Compatibility
+
+Old result files without `container_metrics` are handled gracefully:
+- The metric extractors return `None` for missing container metrics
+- `_extract_metric_values()` filters out `None` values
+- Analysis sections are gated on data availability (skip if no container data)
+- Console tables show "N/A" for missing values
+
+### Commands
+
+```bash
+# Container metrics are collected automatically during load tests
+python test_carbon_comprehensive.py -f fastapi -l 100 -e light
+
+# Measure startup times (restarts containers!)
+python test_carbon_comprehensive.py --measure-startup
+python test_carbon_comprehensive.py --measure-startup -f fastapi --startup-runs 5
+
+# Via quick_test.py
+python quick_test.py --startup
+python quick_test.py --startup fastapi
+```
