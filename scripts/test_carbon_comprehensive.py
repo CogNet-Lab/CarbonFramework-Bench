@@ -424,7 +424,7 @@ def run_test(framework_key, load_size, endpoint_name, endpoint_path, run_id=None
     test_start = time.time()
 
     # Start container resource monitoring (app container only, not DB)
-    container_name = f"{framework_config['folder']}-app-1"
+    container_name = framework_config['folder']
     monitor = ContainerMonitor(container_name)
     monitor.start()
 
@@ -591,7 +591,7 @@ def measure_startup_time(framework_key, timeout=120):
     Returns a dict with framework info and startup_time_seconds.
     """
     framework_config = FRAMEWORKS[framework_key]
-    container_name = f"{framework_config['folder']}-app-1"
+    container_name = framework_config['folder']
     port = framework_config["port"]
     health_url = f"http://localhost:{port}/api/v1/health"
 
