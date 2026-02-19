@@ -47,6 +47,11 @@ This framework provides a comprehensive set of metrics to evaluate framework per
 - **QPS** (Queries Per Second / Requests Per Second)
 - **Success Rate** (%) - Ratio of successful to total requests
 
+#### **Resource Metrics**
+- **Container CPU Utilization** (%) — Average and peak CPU during load test (via `docker stats`)
+- **Container Memory Usage** (MB) — Average, peak, and baseline memory during load test
+- **Startup Time** (seconds) — Cold-start time from container start to first health response
+
 #### **Analysis Dimensions**
 - **Framework Comparison** - Side-by-side ranking of all frameworks
 - **Load Scaling Analysis** - How each framework scales from 100 to 10,000 requests
@@ -228,6 +233,15 @@ Each framework directory contains a `docker-compose.yml` that orchestrates:
     "median_ms": 11.8,
     "p95_ms": 18.4,
     "p99_ms": 22.1
+  },
+  "container_metrics": {
+    "container_name": "fastapi-carbon-test-app-1",
+    "sample_count": 12,
+    "cpu_percent_avg": 15.3,
+    "cpu_percent_max": 42.1,
+    "memory_mb_avg": 156.3,
+    "memory_mb_max": 210.5,
+    "memory_mb_baseline": 120.0
   }
 }
 ```
@@ -249,6 +263,7 @@ Raw energy consumption data from CodeCarbon is saved as `test_results/codecarbon
 test_results/
 ├── {framework}_{endpoint}_{load}_{timestamp}.json    # Individual tests
 ├── comparison_suite_{timestamp}.json                  # Full suite aggregate
+├── startup_times_{timestamp}.json                     # Startup time measurements
 ├── codecarbon_{framework}_{endpoint}_{load}.csv       # Raw CodeCarbon data
 └── REPORT.md                                          # Generated analysis
 ```
@@ -313,10 +328,13 @@ CarbonFramework-Bench/
 1. Health check to verify the framework is running
 2. Warmup phase (50 requests to health endpoint)
 3. CodeCarbon emissions tracker starts
-4. Load test executes (sequential for <= 100 requests, concurrent otherwise)
-5. CodeCarbon tracker stops and records emissions
-6. Results are computed (latency stats, RPS, emissions per request)
-7. Results saved to JSON and CodeCarbon CSV
+4. Container resource monitor starts (polls CPU% and memory via `docker stats`)
+5. Load test executes (sequential for <= 100 requests, concurrent otherwise)
+6. Container resource monitor stops (captures load-phase metrics only)
+7. Optional padding sleep if `--min-duration` requires a longer measurement window
+8. CodeCarbon tracker stops and records emissions
+9. Results are computed (latency stats, RPS, emissions per request, container metrics)
+10. Results saved to JSON and CodeCarbon CSV
 
 ### Expected Test Duration
 
